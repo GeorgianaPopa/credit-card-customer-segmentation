@@ -1,181 +1,197 @@
-"""
-Credit Card Customer Segmentation - Exam Project
-Student: Popa Georgiana-Daniela
-Group: AIAC 1
-Description: Unsupervised Learning Pipeline comparing K-Means & Agglomerative Clustering
-"""
+import os 
+import numpy as np 
+import pandas as pd 
+import matplotlib.pyplot as plt 
+import seaborn as sns 
+from sklearn.preprocessing import StandardScaler 
+from sklearn.cluster import KMeans, AgglomerativeClustering 
+from sklearn.metrics import silhouette_score, davies_bouldin_score 
+from sklearn.decomposition import PCA 
+import scipy.cluster.hierarchy as sch 
 
-import os
-import numpy as np
-import pandas as pd
-import matplotlib.pyplot as plt
-import seaborn as sns
-from sklearn.preprocessing import StandardScaler
-from sklearn.cluster import KMeans, AgglomerativeClustering
-from sklearn.metrics import silhouette_score, davies_bouldin_score
-from sklearn.decomposition import PCA
-import scipy.cluster.hierarchy as sch
-
-# Ensure directories exist for saving figures
+# create outputs folder 
 os.makedirs('outputs', exist_ok=True)
-print("=== Step 1: Environment and Dependencies Initialized Successfully ===")
 
-# =====================================================================
-# 1. DATASET LOADING & EXPLORATORY DATA ANALYSIS (EDA) [Slides S4->S5]
-# =====================================================================
-print("\n=== Step 2: Loading Dataset & Running Preprocessing ===")
+# define where the dataset is located 
 data_path = 'data/CC GENERAL.csv'
 
+# make sure the file is actually there before trying to read it
 if not os.path.exists(data_path):
-    raise FileNotFoundError(f"Missing dataset file! Please place 'CC GENERAL.csv' inside the 'data/' folder.")
+    raise FileNotFoundError("Missing dataset file in data/ folder.")
 
+# read the csv file into a pandas dataframe
 df = pd.read_csv(data_path)
-print(f"Dataset Loaded Successfully. Rows: {df.shape[0]}, Features: {df.shape[1]}")
 
-# Display initial data state info
-print("\n--- Missing Values Before Imputation ---")
-print(df.isnull().sum()[df.isnull().sum() > 0])
-
-# Preprocessing: Impute missing entries with the feature median to keep distribution intact
+# fill in missing minimum payments with the median value so we don't lose rows
 df['MINIMUM_PAYMENTS'] = df['MINIMUM_PAYMENTS'].fillna(df['MINIMUM_PAYMENTS'].median())
+
+# do the exact same thing for any missing credit limits
 df['CREDIT_LIMIT'] = df['CREDIT_LIMIT'].fillna(df['CREDIT_LIMIT'].median())
 
-# Drop customer unique identifier as it contains no predictive behavioral patterns
-X_raw = df.drop(columns=['CUST_ID'])
+# drop the customer id column because it's just an identifier, not a behavioral feature
+X = df.drop(columns=['CUST_ID'])
 
-# Feature Scaling: Apply standard normalization (Mean=0, Var=1) since distance metrics 
-# are highly sensitive to magnitude variations across distinct financial metrics.
+# initialize the standard scaler to normalize our features
 scaler = StandardScaler()
-X_scaled = scaler.fit_transform(X_raw)
-print("Data Preprocessing and Feature Standardization Complete.")
 
-# =====================================================================
-# 2. BASELINE MODELING & VALIDATION (K-MEANS) [Slides S6->S8]
-# =====================================================================
-print("\n=== Step 3: Running Baseline K-Means & Elbow Optimization ===")
+# fit the scaler to our data and transform it so everything is on the same mathematical scale
+X_scaled = scaler.fit_transform(X)
+
+# prepare an empty list to store the within-cluster sum of squares (WCSS)
 wcss = []
+
+# we'll test k values from 2 up to 10 to find the elbow
 k_range = range(2, 11)
 
-# Compute Within-Cluster Sum of Squares (WCSS) to locate the geometric 'Elbow'
+# loop through each k value to see which one works best
 for k in k_range:
+    # create a kmeans model for the current k
     kmeans = KMeans(n_clusters=k, init='k-means++', random_state=42, n_init=10)
+    
+    # fit the model to our scaled data
     kmeans.fit(X_scaled)
+    
+    # add the inertia (WCSS) to our list for plotting later
     wcss.append(kmeans.inertia_)
 
-# Generate and Save the Elbow Method Chart
+# set up the figure for our elbow plot
 plt.figure(figsize=(8, 5))
+
+# plot the k values against their corresponding wcss
 plt.plot(k_range, wcss, marker='o', linestyle='--', color='b')
-plt.title('Elbow Method for Optimal K (Baseline Model)', fontsize=14)
-plt.xlabel('Number of Clusters (K)', fontsize=12)
-plt.ylabel('WCSS (Inertia)', fontsize=12)
+
+# add a title to explain the chart
+plt.title('Elbow Method')
+
+# label the x and y axes so it makes sense
+plt.xlabel('Number of Clusters (K)')
+plt.ylabel('WCSS')
+
+# turn on the grid for easier visual reading
 plt.grid(True)
+
+# tidy up the layout so nothing overlaps
 plt.tight_layout()
+
+# save the plot directly to our outputs folder
 plt.savefig('outputs/s6_elbow_plot.png', dpi=300)
-plt.close()
-print("Saved: outputs/s6_elbow_plot.png")
 
-# Instantiate and fit the optimal Baseline Model (Choosing K=4 based on Elbow assessment)
+# close the plot to free up memory
+plt.close()
+
+# based on the elbow plot, 4 looks like a solid choice for k
 optimal_k = 4
-baseline_kmeans = KMeans(n_clusters=optimal_k, init='k-means++', random_state=42, n_init=10)
-kmeans_labels = baseline_kmeans.fit_transform(X_scaled)
-kmeans_cluster_assignments = baseline_kmeans.labels_
 
-# Calculate validation scores for the baseline K-Means algorithm
-kmeans_silhouette = silhouette_score(X_scaled, kmeans_cluster_assignments, sample_size=5000, random_state=42)
-kmeans_db_index = davies_bouldin_score(X_scaled, kmeans_cluster_assignments)
+# set up our final baseline kmeans model using the optimal k=4
+kmeans = KMeans(n_clusters=optimal_k, init='k-means++', random_state=42, n_init=10)
 
-print(f"-> Baseline K-Means (K={optimal_k}) Silhouette Score: {kmeans_silhouette:.4f}")
-print(f"-> Baseline K-Means (K={optimal_k}) Davies-Bouldin Index: {kmeans_db_index:.4f}")
+# fit the model and get the cluster assignments for each customer
+kmeans_labels = kmeans.fit_predict(X_scaled)
 
-# =====================================================================
-# 3. IMPROVED MODEL & COMPARATIVE ANALYSIS [Slides S9->S12]
-# =====================================================================
-print("\n=== Step 4: Running Improved Hierarchical Clustering & Linkage ===")
+# calculate the silhouette score to see how well-separated our clusters are
+# a sample size is used to speed things up since it's computationally heavy
+kmeans_sil = silhouette_score(X_scaled, kmeans_labels, sample_size=5000, random_state=42)
 
-# Generate and Save a Dendrogram using Ward's Linkage
-# We sample 200 rows to maintain clean visibility without cluttering structural branches
+# calculate the davies-bouldin score for another perspective on cluster quality
+kmeans_db = davies_bouldin_score(X_scaled, kmeans_labels)
+
+# set a random seed so our data sampling is reproducible next time we run this
 np.random.seed(42)
-sample_indices = np.random.choice(X_scaled.shape[0], size=200, replace=False)
-X_dendrogram_sample = X_scaled[sample_indices]
 
+# grab 200 random indices from our data for the dendrogram (so the chart isn't a solid block of black lines)
+sample_idx = np.random.choice(X_scaled.shape[0], size=200, replace=False)
+
+# filter our scaled data down using those random indices
+X_sample = X_scaled[sample_idx]
+
+# set up the figure for the dendrogram
 plt.figure(figsize=(10, 6))
-dendrogram = sch.dendrogram(sch.linkage(X_dendrogram_sample, method='ward'))
-plt.title('Hierarchical Clustering Dendrogram (Ward Linkage, Sampled)', fontsize=14)
-plt.xlabel('Customer Data Point Indices', fontsize=12)
-plt.ylabel('Euclidean Distance Threshold', fontsize=12)
+
+# build and plot the dendrogram using the ward linkage method
+sch.dendrogram(sch.linkage(X_sample, method='ward'))
+
+# add a title and label the axes for the dendrogram
+plt.title('Dendrogram')
+plt.xlabel('Customers')
+plt.ylabel('Distance')
+
+# tidy up the layout
 plt.tight_layout()
+
+# save the dendrogram plot
 plt.savefig('outputs/s9_dendrogram.png', dpi=300)
+
+# close the plot
 plt.close()
-print("Saved: outputs/s9_dendrogram.png")
 
-# Fit the Agglomerative Hierarchical Clustering Model
-hierarchical_model = AgglomerativeClustering(n_clusters=optimal_k, metric='euclidean', linkage='ward')
-hierarchical_labels = hierarchical_model.fit_predict(X_scaled)
+# set up our improved model: agglomerative hierarchical clustering using the same optimal k=4
+hc = AgglomerativeClustering(n_clusters=optimal_k, metric='euclidean', linkage='ward')
 
-# Calculate validation scores for the improved hierarchical model
-hierarchical_silhouette = silhouette_score(X_scaled, hierarchical_labels, sample_size=5000, random_state=42)
-hierarchical_db_index = davies_bouldin_score(X_scaled, hierarchical_labels)
+# fit the model and grab the cluster labels
+hc_labels = hc.fit_predict(X_scaled)
 
-print(f"-> Hierarchical Model Silhouette Score: {hierarchical_silhouette:.4f}")
-print(f"-> Hierarchical Model Davies-Bouldin Index: {hierarchical_db_index:.4f}")
+# calculate the silhouette score for the hierarchical model
+hc_sil = silhouette_score(X_scaled, hc_labels, sample_size=5000, random_state=42)
 
-# =====================================================================
-# 4. DIMENSIONALITY REDUCTION & VISUALIZATION [Slides S13->S14]
-# =====================================================================
-print("\n=== Step 5: Dimensionality Reduction via PCA & Final Profiles ===")
+# calculate the davies-bouldin score for the hierarchical model
+hc_db = davies_bouldin_score(X_scaled, hc_labels)
 
-# Reduce 17 dimensional space down to 2 principal components for scatter plot visualization
+# set up pca to reduce our 17 features down to just 2 dimensions so we can visualize it on a flat screen
 pca = PCA(n_components=2, random_state=42)
+
+# apply pca to transform our scaled data into the 2d space
 X_pca = pca.fit_transform(X_scaled)
 
-# Create a clear side-by-side cluster distribution chart
+# create a side-by-side subplot setup
 fig, axes = plt.subplots(1, 2, figsize=(16, 6))
 
-# Plot K-Means Clusters
-sns.scatterplot(x=X_pca[:, 0], y=X_pca[:, 1], hue=kmeans_cluster_assignments, palette='viridis', alpha=0.6, ax=axes[0])
-axes[0].set_title(f'K-Means Space Distribution (K={optimal_k})', fontsize=14)
-axes[0].set_xlabel('Principal Component 1', fontsize=11)
-axes[0].set_ylabel('Principal Component 2', fontsize=11)
-axes[0].legend(title='Clusters')
+# draw a scatter plot for the kmeans clusters on the left side
+sns.scatterplot(x=X_pca[:, 0], y=X_pca[:, 1], hue=kmeans_labels, palette='viridis', alpha=0.6, ax=axes[0])
+axes[0].set_title('K-Means Clusters')
 
-# Plot Hierarchical Clusters
-sns.scatterplot(x=X_pca[:, 0], y=X_pca[:, 1], hue=hierarchical_labels, palette='plasma', alpha=0.6, ax=axes[1])
-axes[1].set_title('Hierarchical Space Distribution (Ward Linkage)', fontsize=14)
-axes[1].set_xlabel('Principal Component 1', fontsize=11)
-axes[1].set_ylabel('Principal Component 2', fontsize=11)
-axes[1].legend(title='Clusters')
+# draw a scatter plot for the hierarchical clusters on the right side
+sns.scatterplot(x=X_pca[:, 0], y=X_pca[:, 1], hue=hc_labels, palette='plasma', alpha=0.6, ax=axes[1])
+axes[1].set_title('Hierarchical Clusters')
 
-plt.suptitle('Comparison of Customer Segments in 2D PCA Space', fontsize=16, fontweight='bold')
+# tidy up the layout for the side-by-side plots
 plt.tight_layout()
+
+# save the final pca comparison plot
 plt.savefig('outputs/s13_pca_comparison.png', dpi=300)
+
+# close the plot
 plt.close()
-print("Saved: outputs/s13_pca_comparison.png")
 
-# Group original dataset features by K-Means labels to extract business personas
-df['Cluster'] = kmeans_cluster_assignments
-profile_features = ['BALANCE', 'PURCHASES', 'ONEOFF_PURCHASES', 'INSTALLMENTS_PURCHASES', 'CASH_ADVANCE', 'CREDIT_LIMIT', 'PAYMENTS']
-cluster_profiles = df.groupby('Cluster')[profile_features].mean()
+# add the kmeans cluster labels back to our original dataframe so we can profile them in human terms
+df['Cluster'] = kmeans_labels
 
-# Export a cluster distribution heat map showing feature deviations across segments
+# list the key business features we want to look at for our cluster profiles
+features = ['BALANCE', 'PURCHASES', 'ONEOFF_PURCHASES', 'INSTALLMENTS_PURCHASES', 
+            'CASH_ADVANCE', 'CREDIT_LIMIT', 'PAYMENTS']
+
+# group by cluster and calculate the average value of each feature
+profiles = df.groupby('Cluster')[features].mean()
+
+# set up a figure for our final heatmap
 plt.figure(figsize=(10, 6))
-sns.heatmap(cluster_profiles.T, annot=True, fmt=".1f", cmap="YlGnBu", linewidths=.5)
-plt.title('Financial Feature Distribution Profile per Customer Segment', fontsize=14, pad=15)
-plt.ylabel('Financial Behavioral Features', fontsize=12)
-plt.xlabel('Identified Customer Segments', fontsize=12)
-plt.tight_layout()
-plt.savefig('outputs/s14_cluster_profiles.png', dpi=300)
-plt.close()
-print("Saved: outputs/s14_cluster_profiles.png")
 
-# =====================================================================
-# PRINT COMPLETE PERFORMANCE REPORT SUMMARY
-# =====================================================================
-print("\n" + "="*55)
-print("        FINAL PRESENTATION METRIC SUMMARY REPORT        ")
-print("="*55)
-print(f"{'Metric Used':<25} | {'Baseline (K-Means)':<20} | {'Hierarchical':<15}")
-print("-"*55)
-print(f"{'Silhouette Score (↑)':<25} | {kmeans_silhouette:<20.4f} | {hierarchical_silhouette:<15.4f}")
-print(f"{'Davies-Bouldin Index (↓)':<25} | {kmeans_db_index:<20.4f} | {hierarchical_db_index:<15.4f}")
-print("="*55)
-print("Pipeline complete. All graphics are generated in the 'outputs/' folder for your slides.")
+# draw a heatmap to visually show the average feature values per cluster
+sns.heatmap(profiles.T, annot=True, fmt=".1f", cmap="YlGnBu", linewidths=.5)
+
+# add a title to the heatmap
+plt.title('Cluster Profiles')
+
+# tidy up the layout
+plt.tight_layout()
+
+# save the heatmap plot
+plt.savefig('outputs/s14_cluster_profiles.png', dpi=300)
+
+# close the plot
+plt.close()
+
+# Finally, print out a quick summary to the console so we know it finished and can see the scores
+print("=== Final Evaluation ===")
+print(f"K-Means (k={optimal_k})      - Silhouette: {kmeans_sil:.4f}, Davies-Bouldin: {kmeans_db:.4f}")
+print(f"Hierarchical (k={optimal_k}) - Silhouette: {hc_sil:.4f}, Davies-Bouldin: {hc_db:.4f}")
+print("All pipeline steps complete. Output plots saved to the 'outputs' directory.")
